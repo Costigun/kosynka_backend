@@ -20,24 +20,16 @@ GitHub Actions (.github/workflows/ci.yml)
               └── ждём healthcheck          ← иначе деплой считается упавшим
 ```
 
-На сервере один контейнер — приложение, слушает порт 80. Базы на сервере нет,
-PostgreSQL managed у хостера.
+На сервере три контейнера: Caddy (порты 80 и 443, TLS), приложение и PostgreSQL 18.
+Наружу смотрит только Caddy — приложение и база доступны лишь внутри compose-сети.
 
-## Про HTTPS
+## HTTPS
 
-**Его нет.** Доменного имени у проекта нет по решению владельца, а Let's Encrypt не
-выдаёт сертификаты на IP-адреса — значит TLS невозможен в принципе, и реверс-прокси
-ради него не нужен. API работает по `http://SERVER_IP/`.
+Включён. TLS терминирует Caddy, сертификат Let's Encrypt на бесплатный поддомен
+DuckDNS — он получает и продлевает его сам, без внешних клиентов и таймеров.
+Обращения по `http://` редиректятся на `https://` автоматически.
 
-Из этого следует два факта, которые надо знать:
-
-- Токен игрока ходит по сети **открытым текстом**. Он отвечает на вопрос «кто это»,
-  а не защищает от накрутки (см. CLAUDE.md), но перехватить его в открытом Wi-Fi можно.
-- **Android с API 28 блокирует незашифрованный HTTP по умолчанию.** В мобильном
-  клиенте придётся явно разрешить cleartext — атрибутом `usesCleartextTraffic` в
-  манифесте либо через `network_security_config.xml` с исключением для этого адреса.
-
-Как это исправить, если решение изменится, — в разделе «Как добавить HTTPS» ниже.
+Как это было настроено и как переиграть — в [`tls.md`](tls.md).
 
 ---
 
@@ -46,10 +38,9 @@ PostgreSQL managed у хостера.
 - **Сервер.** 2 vCPU / 2 ГБ RAM достаточно. При создании выбирай **чистый образ ОС**
   (Ubuntu 24.04 LTS или Debian 13); преднастроенный «Docker» из списка приложений
   хостера тоже сгодится, но версия там обычно старее — проще поставить самому.
-- **Managed PostgreSQL 18** у хостера.
 - **Код приложения в репозитории.** Сейчас его нет: `Dockerfile` копирует `app/`,
   `alembic/`, `alembic.ini`, `pyproject.toml`, `poetry.lock`. Пока их нет, джоба
-  `deploy` упадёт на сборке образа. Шаги 1–5 можно пройти заранее, шаг 6 — только после.
+  `deploy` упадёт на сборке образа. Шаги 1–4 можно пройти заранее, шаг 5 — только после.
 
 Дальше подставляй свой адрес вместо `SERVER_IP`.
 
@@ -91,7 +82,8 @@ mkdir -p /opt/kosynka
 chown deploy:deploy /opt/kosynka
 ```
 
-В файрволе хостера открой 22 и 80. Порт 443 не нужен — TLS нет.
+В файрволе хостера открой 22, 80 и 443. Порт 80 нужен не только для редиректа:
+через него идёт проверка владения доменом при выпуске и продлении сертификата.
 
 Проверка: `docker version`, `docker compose version` и `rsync --version` отвечают.
 
@@ -130,59 +122,87 @@ ssh -i ~/.ssh/kosynka_deploy deploy@SERVER_IP 'ssh-keygen -lf /etc/ssh/ssh_host_
 
 ---
 
-## Шаг 3. Managed PostgreSQL
+## Шаг 3. Файлы окружения на сервере
 
-У хостера создай инстанс PostgreSQL 18, базу `kosynka` и пользователя для неё.
-Разреши подключения с IP сервера.
+PostgreSQL 18 работает контейнером на том же сервере — отдельно создавать
+ничего не нужно, `deploy/docker-compose.yml` поднимет его сам. Наружу база не
+публикуется: до неё достаёт только приложение по compose-сети.
 
-DSN выглядит так:
+Нужны три файла. Они создаются руками один раз, **никогда не попадают в git**
+и не затираются деплоем — `rsync` идёт с `--exclude='.env*'`.
 
-```
-postgresql+asyncpg://USER:PASSWORD@HOST:PORT/kosynka?ssl=require
-```
-
-Два момента, на которых легко споткнуться:
-
-- Драйвер именно `postgresql+asyncpg`, а не `postgresql`.
-- У asyncpg параметр называется `ssl`, а не `sslmode`. `?sslmode=require`
-  уронит приложение на старте с невнятной ошибкой.
-
-Посмотри `max_connections` у выбранного тарифа: в `deploy/docker-compose.yml`
-стоит `KOSYNKA_DB_POOL_SIZE: "10"`, плюс соединения миграционного запуска.
-На дешёвых тарифах лимит бывает 20–25 — тогда уменьшай.
-
----
-
-## Шаг 4. Файл окружения на сервере
-
-Он один, создаётся руками и **никогда не попадает в git**. CI его не трогает:
-`rsync` идёт с `--exclude='.env*'`.
+Пароль базы генерируется один раз и подставляется в оба файла сразу, чтобы они
+гарантированно совпали:
 
 ```bash
 ssh deploy@SERVER_IP
 cd /opt/kosynka
 
-cat > .env.app <<'EOF'
-KOSYNKA_DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:PORT/kosynka?ssl=require
+PGPASS=$(openssl rand -hex 16)
+
+cat > .env.db <<EOF
+POSTGRES_USER=kosynka
+POSTGRES_PASSWORD=$PGPASS
+POSTGRES_DB=kosynka
 EOF
 
-chmod 600 .env.app
+cat > .env.app <<EOF
+KOSYNKA_DATABASE_URL=postgresql+asyncpg://kosynka:$PGPASS@db:5432/kosynka
+EOF
+
+cat > .env.site <<EOF
+SITE_ADDR=имя.duckdns.org
+ACME_EMAIL=твоя@почта
+EOF
+
+chmod 600 .env.db .env.app .env.site
+unset PGPASS
 ```
 
-Там же — логин в GHCR, иначе `docker compose pull` не вытянет приватный образ.
-Нужен classic PAT со скоупом `read:packages`:
+`.env.site` читает Caddy: `SITE_ADDR` — доменное имя, на которое он получит
+сертификат, `ACME_EMAIL` — адрес для предупреждений Let's Encrypt. Файл должен
+существовать **до** первого деплоя: без него compose не стартует.
+
+Три момента, на которых легко споткнуться:
+
+- Драйвер именно `postgresql+asyncpg`, а не `postgresql`.
+- Хост — `db`, имя сервиса в compose. Не `localhost`: внутри контейнера
+  это он сам, а не соседний контейнер.
+- **Без `?ssl=require`.** Соединение не выходит за пределы compose-сети,
+  а Postgres в контейнере TLS по умолчанию не поднимает — с этим параметром
+  приложение просто не подключится.
+
+Пароль менять потом больно: он лежит и в базе, и в DSN. Если всё же придётся —
+меняй в обоих файлах и пересоздавай пользователя в базе.
+
+### Бэкапы
+
+Их **никто не делает автоматически** — это цена того, что база своя, а не
+managed. Снять дамп:
 
 ```bash
-echo '<GitHub PAT с read:packages>' | docker login ghcr.io -u Costigun --password-stdin
+ssh deploy@SERVER_IP 'cd /opt/kosynka && docker compose exec -T db pg_dump -U kosynka kosynka' > kosynka-$(date +%F).sql
 ```
 
-Альтернатива: после первого деплоя сделать пакет публичным
-(`github.com/users/Costigun/packages` → Package settings → Change visibility).
-Тогда логин на сервере не нужен вовсе — в образе нет ничего секретного.
+Восстановить:
+
+```bash
+cat kosynka-2026-07-31.sql | ssh deploy@SERVER_IP 'cd /opt/kosynka && docker compose exec -T db psql -U kosynka kosynka'
+```
+
+Данные лежат в томе `pgdata` и переживают передеплой. Стирает их только
+`docker compose down -v` — эту команду на сервере выполнять не нужно никогда.
+
+### Образ из GHCR
+
+Логин не требуется: пакет `kosynka-backend` публичный, `docker compose pull`
+тянет его анонимно. Если однажды сделаешь пакет приватным, на сервере
+понадобится `docker login ghcr.io -u Costigun` с classic PAT (скоуп
+`read:packages`).
 
 ---
 
-## Шаг 5. Секреты GitHub
+## Шаг 4. Секреты GitHub
 
 `Settings → Secrets and variables → Actions → New repository secret`:
 
@@ -201,7 +221,7 @@ Required reviewers`.
 
 ---
 
-## Шаг 6. Первый деплой
+## Шаг 5. Первый деплой
 
 Доставка срабатывает на пуш в `main`, а прямые коммиты в `main` в этом проекте
 не делаются — значит, через merge PR:
@@ -217,11 +237,20 @@ gh pr create --base main --title "Доставка через docker compose" --
 Проверка после зелёного пайплайна:
 
 ```bash
-curl http://SERVER_IP/healthz
+curl https://имя.duckdns.org/healthz
+# {"status":"ok"}
+
+curl -sI http://имя.duckdns.org/healthz | head -1
+# HTTP/1.1 308 Permanent Redirect
 
 ssh deploy@SERVER_IP 'cd /opt/kosynka && docker compose ps'
-# app   ...   Up (healthy)
+# caddy  ...  Up
+# app    ...  Up (healthy)
+# db     ...  Up (healthy)
 ```
+
+Первый запрос после деплоя может занять несколько секунд — Caddy в этот момент
+получает сертификат. Если не вышло: `docker compose logs caddy`.
 
 ---
 
@@ -254,28 +283,6 @@ docker compose up -d
 
 ---
 
-## Как добавить HTTPS
-
-Если решение по домену изменится, порядок такой:
-
-1. **Получить имя.** Платить не обязательно: DuckDNS даёт бесплатный поддомен
-   `что-нибудь.duckdns.org`, и он есть в Public Suffix List — значит лимиты
-   Let's Encrypt считаются персонально, а не делятся со всеми пользователями
-   сервиса. У `nip.io` и `sslip.io` этого свойства нет, там квота общая.
-2. **Вернуть Caddy** в `deploy/docker-compose.yml` вторым сервисом: порты 80 и 443,
-   тома `caddy_data` и `caddy_config` под сертификаты, `env_file: .env.site`.
-   У приложения при этом `ports` меняется обратно на `expose: 8000`.
-3. **`deploy/Caddyfile`** из двух строк: глобальный блок с `email {$ACME_EMAIL}`
-   и блок `{$SITE_DOMAIN} { reverse_proxy app:8000 }`. Сертификат Caddy выпустит
-   и будет продлевать сам.
-4. **`/opt/kosynka/.env.site`** с `SITE_DOMAIN` и `ACME_EMAIL`, отдельно от `.env.app`:
-   DSN базы не должен попадать в окружение прокси.
-5. Открыть 443 в файрволе. Порт 80 оставить: ACME HTTP-01 проверяет домен через него.
-6. В мобильном клиенте убрать разрешение cleartext-трафика.
-
-История правок этих файлов лежит в git — восстанавливать с нуля не придётся.
-
----
 
 ## Если упало
 
@@ -284,9 +291,10 @@ docker compose up -d
 | `Permission denied (publickey)` в джобе deploy | Не совпал `SSH_PRIVATE_KEY` или ключ не добавлен пользователю `deploy`. Проверь права: `/home/deploy/.ssh` должен быть 700, `authorized_keys` — 600, иначе sshd молча их игнорирует. |
 | `Host key verification failed` | `SSH_KNOWN_HOSTS` пуст, от другого сервера или адрес в начале строки не совпадает с `SSH_HOST`. |
 | `denied: ... unauthorized` при `docker compose pull` | На сервере не сделан `docker login ghcr.io`, либо PAT протух. |
+| `password authentication failed for user "kosynka"` | Пароли в `.env.db` и `.env.app` разошлись. Проще пересоздать оба по шагу 3 и удалить том: `docker compose down -v` — но это стирает данные. |
 | Деплой упал на «Контейнер app не стал healthy» | В выводе джобы уже приложены последние 50 строк логов контейнера. Чаще всего — неверный DSN. |
-| `sslmode is an invalid keyword argument` | В DSN `sslmode` вместо `ssl`. См. шаг 3. |
-| `too many connections` | `KOSYNKA_DB_POOL_SIZE` вышел за `max_connections` managed-инстанса. |
+| `sslmode is an invalid keyword argument` | В DSN остался `?ssl=require` или `?sslmode=`. База в контейнере TLS не поднимает — параметр надо убрать. См. шаг 3. |
+| `too many connections` | `KOSYNKA_DB_POOL_SIZE` вышел за `max_connections` (у postgres:18 по умолчанию 100). |
 | Миграция упала, приложение не перезапустилось | Так и задумано: `release.sh` падает до `up -d`, старая версия продолжает работать. Чини миграцию и пушь заново. |
 | `bind: address already in use` при `up -d` | Порт 80 занят чем-то ещё — чаще всего преднастроенным compose-проектом от хостера или системным nginx. |
 

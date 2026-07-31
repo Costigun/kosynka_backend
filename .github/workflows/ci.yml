@@ -161,5 +161,7 @@ jobs:
         env:
           TARGET: ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}
         run: |
-          rsync -az --exclude='.env*' deploy/ "$TARGET:/opt/kosynka/"
+          # cloud-init.yaml нужен только при создании ВМ — на работающем сервере
+          # ему делать нечего.
+          rsync -az --exclude='.env*' --exclude='cloud-init.yaml' deploy/ "$TARGET:/opt/kosynka/"
           ssh "$TARGET" "IMAGE_TAG=${{ github.sha }} bash /opt/kosynka/release.sh"
