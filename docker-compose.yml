@@ -1,4 +1,12 @@
-# Локальная разработка и tests/api. На сервере лежит другой файл — deploy/docker-compose.yml.
+# Локальный запуск по тому же принципу, что и на сервере: приложение работает
+# в контейнере из того же Dockerfile, миграции идут отдельным шагом ДО старта,
+# healthcheck тот же. Отличий от deploy/docker-compose.yml ровно два, и оба
+# вынужденные:
+#   1. образ собирается здесь, а не тянется из GHCR;
+#   2. есть сервис db — на сервере база managed и в compose её нет.
+#
+# Быстрый цикл разработки с автоперезагрузкой — это не сюда:
+#   poetry run uvicorn app.main:app --reload
 
 services:
   db:
@@ -8,7 +16,10 @@ services:
       POSTGRES_PASSWORD: kosynka
       POSTGRES_DB: kosynka
     ports:
-      - "5432:5432"
+      # 55432, а не 5432: на машине уже слушает Postgres из Homebrew,
+      # и публикация на 5432 просто не поднялась бы. Внутри compose-сети
+      # порт обычный, приложение ходит на db:5432.
+      - "55432:5432"
     volumes:
       # В postgres:18 том — /var/lib/postgresql, а не /var/lib/postgresql/data,
       # как было до 18. По старому пути данные молча не сохраняются.
@@ -19,25 +30,42 @@ services:
       timeout: 5s
       retries: 10
 
+  migrate:
+    build:
+      context: .
+      target: runtime
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      KOSYNKA_DATABASE_URL: postgresql+asyncpg://kosynka:kosynka@db:5432/kosynka
+    depends_on:
+      db:
+        condition: service_healthy
+    # Разовый прогон: контейнер отрабатывает и выходит, перезапускать нечего.
+    restart: "no"
+
   app:
     build:
       context: .
       target: runtime
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
       KOSYNKA_DATABASE_URL: postgresql+asyncpg://kosynka:kosynka@db:5432/kosynka
+      KOSYNKA_DB_POOL_SIZE: "5"
+    depends_on:
+      # Ровно тот же порядок, что и в release.sh на сервере: сначала схема,
+      # потом код. Приложение не стартует, пока миграции не отработали успешно.
+      migrate:
+        condition: service_completed_successfully
     ports:
+      # На сервере это 80:8000 — там контейнер смотрит наружу. Локально
+      # хостовый порт другой, чтобы не занимать привилегированный, но
+      # внутри контейнера порт тот же 8000.
       - "8000:8000"
-    volumes:
-      # Исходники прокинуты внутрь, чтобы работал --reload.
-      - ./app:/app/app
-      - ./alembic:/app/alembic
-    # --reload требует watchfiles: в зависимостях должен быть uvicorn[standard].
-    command: >
-      sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
 volumes:
   pgdata:

@@ -131,7 +131,7 @@ poetry install --only main --no-root      # так ставит образ и CI
 
 # тесты
 poetry run pytest tests/unit -q           # секунды, без базы
-docker compose up -d db && poetry run pytest tests/api -q
+poetry run pytest tests/api -q            # нужен живой Postgres; DSN берётся из .env
 
 # качество
 poetry run ruff check app tests && poetry run ruff format --check app tests
@@ -142,8 +142,12 @@ poetry run alembic upgrade head
 poetry run alembic check                  # расхождение моделей и миграций
 poetry run alembic revision --autogenerate -m "..."
 
-# локально целиком
-docker compose up --build                 # :8000, миграции накатятся сами
+# локально целиком, тем же способом, что на сервере
+docker compose up --build                 # :8000, миграции отдельным шагом до старта app
+docker compose down -v                    # остановить и снести данные базы
+
+# быстрый цикл разработки (без контейнера, с автоперезагрузкой)
+poetry run uvicorn app.main:app --reload  # :8000, DSN из .env
 
 # compose-файлы разбираются без ошибок
 docker compose config -q                  # локальный
