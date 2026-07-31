@@ -1,0 +1,22 @@
+# Реверс-прокси и TLS. Сертификат Caddy получает и продлевает сам:
+# SITE_ADDR — доменное имя, и этого достаточно, чтобы заработал ACME.
+#
+# SITE_ADDR и ACME_EMAIL приходят из /opt/kosynka/.env.site — файла, который
+# создаётся на сервере руками и в git не хранится.
+
+{
+	# Сюда Let's Encrypt пришлёт предупреждение, если продление однажды
+	# перестанет работать.
+	email {$ACME_EMAIL}
+}
+
+{$SITE_ADDR} {
+	reverse_proxy app:8000
+
+	encode gzip
+
+	log {
+		output stdout
+		format console
+	}
+}
