@@ -1,0 +1,45 @@
+# Этот файл живёт на сервере в /opt/kosynka. CI кладёт его туда через rsync
+# на каждом деплое — правки коммитятся сюда, а не редактируются на сервере.
+#
+# Базы здесь нет: PostgreSQL managed у хостера, приложение ходит в него по DSN
+# из .env.app.
+#
+# Реверс-прокси тоже нет. Доменного имени у проекта нет, а Let's Encrypt не выдаёт
+# сертификаты на IP-адреса — значит TLS невозможен, и Caddy оказался бы прослойкой
+# ни за чем. Приложение слушает 80 напрямую. Если домен когда-нибудь появится,
+# см. «Как добавить HTTPS» в docs/deploy.md.
+#
+# Рядом на сервере лежат файлы, которых нет в git:
+#   .env.app  — KOSYNKA_DATABASE_URL, создаётся один раз руками
+#   .env      — IMAGE_TAG, перезаписывается каждым деплоем
+
+services:
+  app:
+    image: ghcr.io/costigun/kosynka-backend:${IMAGE_TAG}
+    restart: unless-stopped
+    env_file:
+      - .env.app
+    environment:
+      # Не секреты — правятся коммитом в этот файл.
+      # ВНИМАНИЕ: pool_size не должен упираться в max_connections
+      # managed-инстанса.
+      KOSYNKA_DB_POOL_SIZE: "10"
+      KOSYNKA_XP_K_MAX: "2.0"
+    ports:
+      # 80 снаружи → 8000 внутри. Контейнер работает под непривилегированным
+      # пользователем и порт ниже 1024 сам занять не смог бы; привязку делает
+      # демон Docker.
+      - "80:8000"
+    healthcheck:
+      # /healthz намеренно не трогает базу: моргнувший Postgres не должен
+      # перезапускать контейнер.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

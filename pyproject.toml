@@ -1,0 +1,75 @@
+[project]
+name = "kosynka-backend"
+version = "0.1.0"
+description = "Бэкенд Косынки: регистрация устройства, опыт за победу, уровни"
+authors = [{ name = "Costigun" }]
+readme = "README.md"
+requires-python = ">=3.12,<4.0"
+dependencies = [
+    "fastapi>=0.140,<0.141",
+    "uvicorn[standard]>=0.52,<0.53",
+    "pydantic-settings>=2.14,<3.0",
+    "sqlalchemy[asyncio]>=2.0,<3.0",
+    # Обязателен для asyncio-режима SQLAlchemy. Экстра "asyncio" тянет его не на всех
+    # связках платформы и версии Python — на 3.13/arm64 не подтянулся, и всё падало
+    # с «the greenlet library is required to use this function». Поэтому явно.
+    "greenlet>=3.5,<4.0",
+    "asyncpg>=0.31,<0.32",
+    "alembic>=1.18,<2.0",
+]
+
+[tool.poetry]
+packages = [{ include = "app" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.1"
+# httpx2, а не httpx: starlette.testclient считает первый устаревшим.
+httpx2 = "^2.9"
+ruff = "^0.16"
+mypy = "^2.3"
+
+[build-system]
+requires = ["poetry-core>=2.0"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    # B008 — вызов функции в дефолте аргумента. Это идиома FastAPI (`Depends(...)`),
+    # переписывать сигнатуры ради линтера не нужно.
+    "B008",
+    # RUF001-003 ищут кириллицу, похожую на латиницу, и предлагают её заменить.
+    # В этом проекте комментарии, docstring-и и имена тестов по-русски по соглашению,
+    # так что правило срабатывает на каждой второй строке и ловит только шум.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Имена тестов по-русски — N802 ругается на «нестандартные» имена функций.
+"tests/*" = ["N802"]
+
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = "alembic.*"
+ignore_missing_imports = true
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Корень проекта в sys.path: иначе `import app` в тестах работает только пока
+# корневой пакет установлен в venv, и любой сбой установки даёт невнятное
+# ModuleNotFoundError вместо нормального прогона.
+pythonpath = ["."]

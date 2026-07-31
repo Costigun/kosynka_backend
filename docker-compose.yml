@@ -1,0 +1,43 @@
+# Локальная разработка и tests/api. На сервере лежит другой файл — deploy/docker-compose.yml.
+
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: kosynka
+      POSTGRES_PASSWORD: kosynka
+      POSTGRES_DB: kosynka
+    ports:
+      - "5432:5432"
+    volumes:
+      # В postgres:18 том — /var/lib/postgresql, а не /var/lib/postgresql/data,
+      # как было до 18. По старому пути данные молча не сохраняются.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kosynka"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      target: runtime
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      KOSYNKA_DATABASE_URL: postgresql+asyncpg://kosynka:kosynka@db:5432/kosynka
+    ports:
+      - "8000:8000"
+    volumes:
+      # Исходники прокинуты внутрь, чтобы работал --reload.
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+    # --reload требует watchfiles: в зависимостях должен быть uvicorn[standard].
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+volumes:
+  pgdata:

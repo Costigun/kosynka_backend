@@ -1,0 +1,70 @@
+# Линтеры, типы и тесты. Стадии деплоя здесь намеренно нет:
+# доставка живёт в .github/workflows/ci.yml и едет на пуш в main.
+
+stages:
+  - quality
+
+workflow:
+  # Штатный приём против двойных пайплайнов: без него пуш в ветку с открытым
+  # MR запускает и pipeline ветки, и pipeline merge request одновременно.
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+default:
+  image: python:3.12-slim
+  interruptible: true
+  cache:
+    # Ключ по poetry.lock: пока зависимости не менялись, venv переиспользуется.
+    key:
+      files:
+        - poetry.lock
+    paths:
+      - .venv/
+  before_script:
+    - pip install --no-cache-dir "poetry==${POETRY_VERSION}"
+    - poetry install
+
+variables:
+  POETRY_VERSION: "2.4.1"
+  POETRY_NO_INTERACTION: "1"
+  # venv внутри проекта — иначе его не положить в кеш GitLab,
+  # который умеет только пути внутри рабочего каталога.
+  POETRY_VIRTUALENVS_IN_PROJECT: "true"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+lint:
+  stage: quality
+  script:
+    - poetry check --lock
+    - poetry run ruff check app tests
+    - poetry run ruff format --check app tests
+    - poetry run mypy app
+
+test:
+  stage: quality
+  services:
+    - name: postgres:18
+      alias: postgres
+  variables:
+    POSTGRES_USER: kosynka
+    POSTGRES_PASSWORD: kosynka
+    POSTGRES_DB: kosynka_test
+    # Хост — имя сервиса postgres, а НЕ localhost: в GitLab CI сервисы поднимаются
+    # отдельными контейнерами и доступны по имени. В GitHub Actions наоборот,
+    # там порт проброшен на localhost раннера — отсюда расхождение между файлами.
+    KOSYNKA_DATABASE_URL: "postgresql+asyncpg://kosynka:kosynka@postgres:5432/kosynka_test"
+  script:
+    # У GitLab нет health-check для сервисов, как у GitHub: контейнер считается
+    # запущенным сразу, а Postgres к этому моменту ещё инициализируется.
+    - for i in $(seq 30); do python -c "import socket; socket.create_connection(('postgres', 5432), 1)" 2>/dev/null && break; sleep 1; done
+
+    - poetry run pytest tests/unit
+
+    # Миграции накатываются и не расходятся с моделями.
+    - poetry run alembic upgrade head
+    - poetry run alembic check
+
+    - poetry run pytest tests/api

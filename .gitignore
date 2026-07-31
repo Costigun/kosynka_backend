@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Косынка: файлы окружения сервера (.env.app, .env.site) создаются руками
+# в /opt/kosynka и не должны попадать в git даже случайно.
+.env.*
+.claude/
+.idea/
