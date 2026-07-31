@@ -1,0 +1,47 @@
+#cloud-config
+# Отдаётся хостеру в поле «user-data» / «cloud-init» при создании сервера.
+# Делает шаг 1 гайда: Docker, пользователь deploy, каталог /opt/kosynka, файрвол.
+#
+# Это НЕ docker-compose.yml. Compose-файл на сервер кладёт CI при первом деплое —
+# отдавать его хостеру нельзя, иначе появятся два конкурирующих compose-проекта.
+#
+# Перед вставкой замени ssh_authorized_keys на содержимое ~/.ssh/kosynka_deploy.pub
+# (ключ создаётся в шаге 2 docs/deploy.md).
+#
+# Если у хостера нет поля cloud-init — просто пройди шаг 1 руками, результат тот же.
+
+users:
+  # default обязателен: без него cloud-init не создаст штатного пользователя
+  # хостера, и можно остаться без доступа, если root-вход закрыт.
+  - default
+  - name: deploy
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBA+QmXGq0zdqNphRy+cT9bAB3aQAI+UWkJcjCkySFyf github-actions
+
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  # rsync нужен на сервере: им CI доставляет deploy/ в /opt/kosynka.
+  # В минимальных образах его часто нет.
+  - rsync
+  - ufw
+
+runcmd:
+  - curl -fsSL https://get.docker.com | sh
+  - systemctl enable --now docker
+  # Группа docker появляется только после установки Docker, поэтому
+  # членство выдаётся здесь, а не в блоке users выше.
+  - usermod -aG docker deploy
+  - install -d -o deploy -g deploy -m 755 /opt/kosynka
+  # Наружу смотрят только эти три порта. Приложение слушает внутри
+  # compose-сети, снаружи до него можно дойти только через Caddy.
+  # ufw не ограничивает порты, опубликованные Docker-ом, — но мы публикуем
+  # ровно 80 и 443, так что расхождения нет.
+  - ufw allow 22/tcp
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw --force enable
