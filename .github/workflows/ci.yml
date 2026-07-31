@@ -105,10 +105,30 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ssh отдаёт код 255 на любую беду — от пустого секрета до неверного
+      # ключа хоста. Эти два шага превращают его в осмысленное сообщение.
+      - name: Проверить, что секреты заданы
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          missing=""
+          for name in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Не заданы секреты репозитория:$missing"
+            exit 1
+          fi
+          echo "Все четыре секрета заданы."
+
       - name: Настроить SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
@@ -116,6 +136,26 @@ jobs:
           # Ключ хоста берётся из секрета, а не через ssh-keyscan на месте:
           # keyscan доверяет тому, кто ответил, и защищает ровно ни от чего.
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+          # Ключ, вставленный одной строкой или без строк BEGIN/END, даёт
+          # неотличимый на глаз отказ. Здесь он отваливается сразу и по делу.
+          if ! ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null 2>&1; then
+            echo "::error::SSH_PRIVATE_KEY не разбирается как приватный ключ — проверь, что вставлен весь файл, вместе со строками -----BEGIN/END-----"
+            exit 1
+          fi
+
+          # Хост в known_hosts должен совпадать с SSH_HOST посимвольно,
+          # иначе ssh скажет «Host key verification failed».
+          if ! grep -q "^${SSH_HOST} " ~/.ssh/known_hosts; then
+            echo "::error::SSH_KNOWN_HOSTS не содержит записи для ${SSH_HOST}. Пересними её: ssh-keyscan -t ed25519 ${SSH_HOST}"
+            exit 1
+          fi
+
+      - name: Проверить доступ к серверу
+        env:
+          TARGET: ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=15 "$TARGET" 'echo "вход выполнен $(whoami)@$(hostname)"'
 
       - name: Доставить конфиги и перезапустить
         env:
