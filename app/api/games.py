@@ -21,7 +21,7 @@ from app.xp import XpConfig
 router = APIRouter(tags=["games"])
 
 
-@router.post("/games")
+@router.post("/games", response_model=GameResultResponse)
 async def submit_game(
     payload: GameCreateRequest,
     player: Player = Depends(current_player),
@@ -37,7 +37,7 @@ async def submit_game(
     return await game_service.submit(session=session, player=player, data=payload, config=config)
 
 
-@router.get("/games")
+@router.get("/games", response_model=GameListResponse)
 async def list_games(
     player: Player = Depends(current_player),
     session: AsyncSession = Depends(get_session),
@@ -52,7 +52,7 @@ async def list_games(
     return await game_service.list(session=session, player=player, limit=limit, offset=offset)
 
 
-@router.get("/games/{game_id}")
+@router.get("/games/{game_id}", response_model=GameResponse)
 async def read_game(
     game_id: UUID,
     player: Player = Depends(current_player),
@@ -62,7 +62,7 @@ async def read_game(
     return await game_service.detail(session=session, player=player, game_id=game_id)
 
 
-@router.patch("/games/{game_id}")
+@router.patch("/games/{game_id}", response_model=GameResponse)
 async def update_game(
     game_id: UUID,
     payload: GameUpdateRequest,
@@ -76,7 +76,7 @@ async def update_game(
     )
 
 
-@router.delete("/games/{game_id}")
+@router.delete("/games/{game_id}", response_model=GameDeletedResponse)
 async def delete_game(
     game_id: UUID,
     player: Player = Depends(current_player),

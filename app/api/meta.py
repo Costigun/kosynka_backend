@@ -3,12 +3,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
+from app.schemas.meta import HealthResponse
 
+# Пробники намеренно стоят вне цепочки слоёв: ни сервиса, ни вида, ни доступа
+# к данным. /healthz обязан отвечать, даже когда всё остальное сломано, —
+# любая зависимость здесь превращала бы чужой отказ в перезапуск контейнера.
 router = APIRouter(tags=["meta"])
 
 
-@router.get("/healthz")
-async def healthz() -> dict[str, str]:
+@router.get("/healthz", response_model=HealthResponse)
+async def healthz() -> HealthResponse:
     """Живость процесса.
 
     Базу намеренно НЕ трогает. Эта ручка отвечает на вопрос «жив ли процесс»,
@@ -16,11 +20,11 @@ async def healthz() -> dict[str, str]:
     Postgres перезапускал бы все контейнеры разом — то есть превращал бы
     временную недоступность базы в полноценную аварию.
     """
-    return {"status": "ok"}
+    return HealthResponse(status="ok")
 
 
-@router.get("/readyz")
-async def readyz(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
+@router.get("/readyz", response_model=HealthResponse)
+async def readyz(session: AsyncSession = Depends(get_session)) -> HealthResponse:
     """Готовность обслуживать запросы.
 
     Здесь база нужна: ``SELECT 1`` идёт через тот же пул, которым пользуется
@@ -38,4 +42,4 @@ async def readyz(session: AsyncSession = Depends(get_session)) -> dict[str, str]
             detail="database unavailable",
         ) from exc
 
-    return {"status": "ok"}
+    return HealthResponse(status="ok")

@@ -21,7 +21,11 @@ from app.xp import XpConfig
 router = APIRouter(tags=["players"])
 
 
-@router.post("/players", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/players",
+    response_model=PlayerRegisteredResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def register_player(
     payload: PlayerRegisterRequest | None = None,
     session: AsyncSession = Depends(get_session),
@@ -33,7 +37,7 @@ async def register_player(
     )
 
 
-@router.get("/players/me")
+@router.get("/players/me", response_model=PlayerStateResponse)
 async def read_current_player(
     player: Player = Depends(current_player),
     config: XpConfig = Depends(get_xp_config),
@@ -42,7 +46,7 @@ async def read_current_player(
     return await player_service.state(player=player, config=config)
 
 
-@router.patch("/players/me")
+@router.patch("/players/me", response_model=PlayerStateResponse)
 async def update_current_player(
     payload: PlayerUpdateRequest,
     player: Player = Depends(current_player),
@@ -53,7 +57,7 @@ async def update_current_player(
     return await player_service.update(session=session, player=player, data=payload, config=config)
 
 
-@router.delete("/players/me")
+@router.delete("/players/me", response_model=PlayerDeletedResponse)
 async def delete_current_player(
     player: Player = Depends(current_player),
     session: AsyncSession = Depends(get_session),
