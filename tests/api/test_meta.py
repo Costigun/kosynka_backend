@@ -12,7 +12,7 @@ DEAD_DSN = "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/nothing"
 
 
 @pytest.fixture
-def база_недоступна() -> Iterator[None]:
+def database_unavailable() -> Iterator[None]:
     """Подменяет фабрику сессий на смотрящую в никуда."""
     original = fastapi_app.state.session_factory
     fastapi_app.state.session_factory = create_session_factory(create_async_engine(DEAD_DSN))
@@ -22,34 +22,38 @@ def база_недоступна() -> Iterator[None]:
         fastapi_app.state.session_factory = original
 
 
-def test_healthz_отвечает(client: TestClient) -> None:
-    response = client.get("/healthz")
+class TestHealthz:
+    """GET /healthz — живость процесса."""
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    def test_responds_ok(self, client: TestClient) -> None:
+        response = client.get("/healthz")
 
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
 
-def test_readyz_подтверждает_что_база_отвечает(client: TestClient) -> None:
-    response = client.get("/readyz")
+    def test_does_not_depend_on_database(
+        self, client: TestClient, database_unavailable: None
+    ) -> None:
+        """Ключевое свойство, ради которого пробник отделён от /readyz.
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-
-
-def test_readyz_отдаёт_503_когда_база_недоступна(client: TestClient, база_недоступна: None) -> None:
-    """Готовность должна падать честно: 503 уводит контейнер из балансировки,
-    но не перезапускает его."""
-    response = client.get("/readyz")
-
-    assert response.status_code == 503
+        Если бы liveness ходил в базу, моргнувший Postgres перезапускал бы все
+        контейнеры разом — то есть превращал бы недоступность базы в аварию.
+        """
+        assert client.get("/healthz").status_code == 200
 
 
-def test_healthz_не_зависит_от_базы(client: TestClient, база_недоступна: None) -> None:
-    """Ключевое свойство /healthz, ради которого он отделён от /readyz.
+class TestReadyz:
+    """GET /readyz — готовность обслуживать запросы."""
 
-    Если бы liveness ходил в базу, моргнувший Postgres перезапускал бы все
-    контейнеры разом — то есть превращал бы недоступность базы в аварию.
-    """
-    response = client.get("/healthz")
+    def test_confirms_database_responds(self, client: TestClient) -> None:
+        response = client.get("/readyz")
 
-    assert response.status_code == 200
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+    def test_returns_503_when_database_unavailable(
+        self, client: TestClient, database_unavailable: None
+    ) -> None:
+        """Готовность должна падать честно: 503 уводит контейнер из
+        балансировки, но не перезапускает его."""
+        assert client.get("/readyz").status_code == 503
