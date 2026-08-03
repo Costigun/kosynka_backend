@@ -1,6 +1,4 @@
-from uuid import UUID
-
-from app.models import Game
+from app.models import Game, Player
 from app.schemas.games import (
     GameDeletedResponse,
     GameListResponse,
@@ -11,10 +9,13 @@ from app.xp import LevelInfo
 
 
 class GameView:
-    """Сборка ответов по партии."""
+    """Сборка ответов по партии.
+
+    Все методы принимают доменные объекты — ``Game`` и, где ответ включает
+    состояние игрока, ``Player``.
+    """
 
     def make_response_schema(self, game: Game) -> GameResponse:
-        """Партия целиком. Канонический случай проекции строки в схему."""
         return GameResponse(
             game_id=game.id,
             client_game_id=game.client_game_id,
@@ -37,26 +38,14 @@ class GameView:
         )
 
     def make_result_response_schema(
-        self,
-        game_id: UUID,
-        client_game_id: UUID,
-        xp_awarded: int,
-        xp_total: int,
-        level: LevelInfo,
-        already_counted: bool,
+        self, game: Game, player: Player, level: LevelInfo, already_counted: bool
     ) -> GameResultResponse:
-        """Итог засчитанной партии.
-
-        ORM-объект ``Game`` сюда сознательно не передаётся: ``xp_total``
-        приходит не из него, а из ``UPDATE ... RETURNING`` по таблице игроков,
-        и тащить модель ради двух полей значило бы делать лишний ``SELECT``
-        после вставки.
-        """
+        """Итог засчитанной партии: сама партия плюс состояние игрока после неё."""
         return GameResultResponse(
-            game_id=game_id,
-            client_game_id=client_game_id,
-            xp_awarded=xp_awarded,
-            xp_total=xp_total,
+            game_id=game.id,
+            client_game_id=game.client_game_id,
+            xp_awarded=game.xp_awarded,
+            xp_total=player.xp_total,
             level=level.level,
             xp_into_level=level.xp_into_level,
             xp_to_next=level.xp_to_next,
@@ -64,12 +53,13 @@ class GameView:
         )
 
     def make_deleted_response_schema(
-        self, game_id: UUID, xp_removed: int, xp_total: int, level: LevelInfo
+        self, game: Game, player: Player, level: LevelInfo
     ) -> GameDeletedResponse:
+        """Подтверждение удаления: что удалили и каким стал игрок."""
         return GameDeletedResponse(
-            game_id=game_id,
-            xp_removed=xp_removed,
-            xp_total=xp_total,
+            game_id=game.id,
+            xp_removed=game.xp_awarded,
+            xp_total=player.xp_total,
             level=level.level,
             xp_into_level=level.xp_into_level,
             xp_to_next=level.xp_to_next,

@@ -48,10 +48,8 @@ async def current_player(
     if credentials is None:
         raise_unauthorized()
 
-    player = await player_object.get_by_token_hash(
+    # raise_exception=True (по умолчанию): неизвестный токен превращается
+    # в 401 внутри слоя доступа, здесь проверять нечего.
+    return await player_object.get_by_token_hash(
         session=session, token_hash=hash_token(credentials.credentials)
     )
-    if player is None:
-        raise_unauthorized()
-
-    return player

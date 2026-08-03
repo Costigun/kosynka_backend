@@ -40,40 +40,47 @@ class PlayerService:
         token = generate_token()
         token_hash = hash_token(token)
 
+        # raise_exception=False: для регистрации «устройства ещё нет» —
+        # нормальный путь, а не ошибка.
         existing = (
-            await player_object.get_by_device_id(session=session, device_id=device_id)
+            await player_object.get_by_device_id(
+                session=session, device_id=device_id, raise_exception=False
+            )
             if device_id
             else None
         )
 
-        if existing is not None:
-            # Старый токен клиент утратил — заменяем хеш. Заодно это отзывает
-            # доступ, если прежний токен где-то остался.
-            await player_object.rotate_token(
-                session=session, player_id=existing.id, token_hash=token_hash
-            )
-            player, restored = existing, True
-        else:
+        if existing is None:
             player = await player_object.create(
                 session=session, token_hash=token_hash, device_id=device_id
             )
             restored = False
+        else:
+            # Старый токен клиент утратил — заменяем хеш. Заодно это отзывает
+            # доступ, если прежний токен где-то остался.
+            player = await player_object.rotate_token(
+                session=session, player_id=existing.id, token_hash=token_hash
+            )
+            restored = True
 
         await session.commit()
 
-        level = xp.level_for_xp(player.xp_total, config)
         return self.view.make_registered_response_schema(
-            player=player, token=token, level=level, restored=restored
+            player=player,
+            level=xp.level_for_xp(player.xp_total, config),
+            token=token,
+            restored=restored,
         )
 
-    async def state(self, player: Player, config: XpConfig) -> PlayerStateResponse:
+    async def detail(self, player: Player, config: XpConfig) -> PlayerStateResponse:
         """Текущее состояние игрока.
 
         В базу не ходит: игрок уже прочитан при аутентификации, а уровень
         считается из его опыта чистой функцией.
         """
-        level = xp.level_for_xp(player.xp_total, config)
-        return self.view.make_state_response_schema(player=player, level=level)
+        return self.view.make_response_schema(
+            player=player, level=xp.level_for_xp(player.xp_total, config)
+        )
 
     async def update(
         self,
@@ -87,14 +94,13 @@ class PlayerService:
         Изменяемое поле ровно одно — ``xp_total``. Это единственное место
         во всём API, где клиент пишет значение, которое иначе выводит сервер.
         """
-        xp_total = await player_object.set_xp(
+        player = await player_object.set_xp(
             session=session, player_id=player.id, xp_total=data.xp_total
         )
         await session.commit()
 
-        level = xp.level_for_xp(xp_total, config)
-        return self.view.make_updated_response_schema(
-            player_id=player.id, xp_total=xp_total, level=level
+        return self.view.make_response_schema(
+            player=player, level=xp.level_for_xp(player.xp_total, config)
         )
 
     async def delete(self, session: AsyncSession, player: Player) -> PlayerDeletedResponse:
@@ -110,6 +116,4 @@ class PlayerService:
         await player_object.delete(session=session, player_id=player.id)
         await session.commit()
 
-        return self.view.make_deleted_response_schema(
-            player_id=player.id, games_deleted=games_deleted
-        )
+        return self.view.make_deleted_response_schema(player=player, games_deleted=games_deleted)

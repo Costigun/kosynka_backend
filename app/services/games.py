@@ -4,7 +4,6 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import xp
-from app.exceptions import raise_game_not_found
 from app.models import Player
 from app.schemas.games import (
     GameCreateRequest,
@@ -25,7 +24,7 @@ class GameService:
 
     view: GameView = game_view
 
-    async def submit(
+    async def create(
         self,
         session: AsyncSession,
         player: Player,
@@ -41,50 +40,42 @@ class GameService:
 
         Обе операции идут в одной транзакции: падение между ними откатывает всё.
         """
-        xp_awarded = xp.xp_for_win(duration_ms=data.duration_ms, config=config)
-
-        game_id = await game_object.insert_if_absent(
+        game = await game_object.insert_if_absent(
             session=session,
             player_id=player.id,
             client_game_id=data.client_game_id,
             duration_ms=data.duration_ms,
-            xp_awarded=xp_awarded,
+            xp_awarded=xp.xp_for_win(duration_ms=data.duration_ms, config=config),
             xp_formula_version=xp.XP_FORMULA_VERSION,
             deal_cards=data.deal_cards,
             replay=data.replay,
         )
 
-        if game_id is None:
-            # Повтор: опыт не начисляем, отдаём ровно то, что записано.
+        if game is None:
+            # Повтор: опыт не начисляем, отдаём то, что уже записано.
             already_counted = True
-            game_id, xp_awarded = await game_object.get_id_and_awarded_xp(
+            game = await game_object.get_by_client_game_id(
                 session=session, player_id=player.id, client_game_id=data.client_game_id
             )
-            xp_total = await player_object.get_xp_total(session=session, player_id=player.id)
+            player = await player_object.get_by_id(session=session, player_id=player.id)
         else:
             already_counted = False
-            xp_total = await player_object.add_xp(
-                session=session, player_id=player.id, amount=xp_awarded
+            player = await player_object.add_xp(
+                session=session, player_id=player.id, amount=game.xp_awarded
             )
 
         await session.commit()
 
-        level = xp.level_for_xp(xp_total, config)
         return self.view.make_result_response_schema(
-            game_id=game_id,
-            client_game_id=data.client_game_id,
-            xp_awarded=xp_awarded,
-            xp_total=xp_total,
-            level=level,
+            game=game,
+            player=player,
+            level=xp.level_for_xp(player.xp_total, config),
             already_counted=already_counted,
         )
 
     async def detail(self, session: AsyncSession, player: Player, game_id: UUID) -> GameResponse:
         """Одна партия игрока."""
         game = await game_object.get_by_id(session=session, player_id=player.id, game_id=game_id)
-        if game is None:
-            raise_game_not_found()
-
         return self.view.make_response_schema(game=game)
 
     async def list(
@@ -121,12 +112,10 @@ class GameService:
         values: dict[str, Any] = data.model_dump(exclude_unset=True)
         if not values:
             # UPDATE без SET — синтаксическая ошибка. Пустой запрос считаем
-            # запросом на чтение: возвращаем партию как есть.
+            # запросом на чтение.
             return await self.detail(session=session, player=player, game_id=game_id)
 
         current = await game_object.get_by_id(session=session, player_id=player.id, game_id=game_id)
-        if current is None:
-            raise_game_not_found()
 
         xp_delta = 0
         if "duration_ms" in values and values["duration_ms"] != current.duration_ms:
@@ -140,9 +129,6 @@ class GameService:
         game = await game_object.update(
             session=session, player_id=player.id, game_id=game_id, values=values
         )
-        if game is None:
-            raise_game_not_found()
-
         if xp_delta:
             await player_object.add_xp(session=session, player_id=player.id, amount=xp_delta)
 
@@ -158,16 +144,12 @@ class GameService:
         Откат опыта обязателен: иначе в сумме остался бы опыт за партию,
         которой больше нет, и уровень перестал бы соответствовать истории.
         """
-        xp_removed = await game_object.delete(session=session, player_id=player.id, game_id=game_id)
-        if xp_removed is None:
-            raise_game_not_found()
-
-        xp_total = await player_object.add_xp(
-            session=session, player_id=player.id, amount=-xp_removed
+        game = await game_object.delete(session=session, player_id=player.id, game_id=game_id)
+        player = await player_object.add_xp(
+            session=session, player_id=player.id, amount=-game.xp_awarded
         )
         await session.commit()
 
-        level = xp.level_for_xp(xp_total, config)
         return self.view.make_deleted_response_schema(
-            game_id=game_id, xp_removed=xp_removed, xp_total=xp_total, level=level
+            game=game, player=player, level=xp.level_for_xp(player.xp_total, config)
         )

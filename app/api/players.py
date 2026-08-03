@@ -43,7 +43,7 @@ async def read_current_player(
     config: XpConfig = Depends(get_xp_config),
 ) -> PlayerStateResponse:
     """Текущий уровень и опыт предъявителя токена."""
-    return await player_service.state(player=player, config=config)
+    return await player_service.detail(player=player, config=config)
 
 
 @router.patch("/players/me", response_model=PlayerStateResponse)

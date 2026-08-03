@@ -22,7 +22,7 @@ router = APIRouter(tags=["games"])
 
 
 @router.post("/games", response_model=GameResultResponse)
-async def submit_game(
+async def create_game(
     payload: GameCreateRequest,
     player: Player = Depends(current_player),
     session: AsyncSession = Depends(get_session),
@@ -34,7 +34,7 @@ async def submit_game(
     переключение между 200 и 201 заставляло бы клиента ветвиться. Факт
     создания несёт поле ``already_counted``.
     """
-    return await game_service.submit(session=session, player=player, data=payload, config=config)
+    return await game_service.create(session=session, player=player, data=payload, config=config)
 
 
 @router.get("/games", response_model=GameListResponse)

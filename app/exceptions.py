@@ -16,6 +16,14 @@ def raise_unauthorized() -> NoReturn:
     )
 
 
+def raise_player_not_found() -> NoReturn:
+    """Игрока с таким признаком нет."""
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="player not found",
+    )
+
+
 def raise_game_not_found() -> NoReturn:
     """Партии нет либо она принадлежит другому игроку.
 
