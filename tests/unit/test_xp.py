@@ -107,6 +107,10 @@ class TestXpConfigValidation:
             # Самая важная: growth < 1 привёл бы к нулевому шагу кривой
             # и вечному циклу в level_for_xp.
             ({"level_growth": 0.9}, "level_growth"),
+            # Ровно 1.0 не зависает, но делает level_for_xp линейным перебором:
+            # 10.7 млн итераций и 0.75 с процессора на запрос при опыте на
+            # потолке INTEGER. Отвергается так же, как и 0.9.
+            ({"level_growth": 1.0}, "level_growth"),
         ],
     )
     def test_impossible_curve_params_rejected(self, kwargs: dict[str, float], match: str) -> None:

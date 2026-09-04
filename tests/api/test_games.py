@@ -4,6 +4,8 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from app.models import MAX_XP_TOTAL
+
 MakePayload = Callable[..., dict[str, Any]]
 
 
@@ -93,6 +95,28 @@ class TestGameCreate:
         )
 
         assert response.status_code == 422
+
+    def test_win_at_xp_ceiling_does_not_crash(
+        self, client: TestClient, auth_headers: dict[str, str], make_game_payload: MakePayload
+    ) -> None:
+        """Опыт, упёршийся в потолок колонки, не должен ломать приём партий.
+
+        PATCH принимает ровно MAX_XP_TOTAL — это валидное значение, а не 422.
+        Без отсечки сверху следующая же победа добавляла бы к пределу INTEGER,
+        база отвечала бы NumericValueOutOfRangeError, и игрок залипал бы в 500
+        на каждой победе навсегда. Симметрично отрицательному опыту снизу:
+        оба конца ведут в одно и то же необратимое состояние.
+        """
+        client.patch("/v1/players/me", json={"xp_total": MAX_XP_TOTAL}, headers=auth_headers)
+
+        response = client.post("/v1/games", json=make_game_payload(), headers=auth_headers)
+
+        assert response.status_code == 200
+        # Опыт сверх потолка теряется молча — и это осознанный размен: копить
+        # его некуда, а единственный способ сюда попасть — та самая ручка,
+        # которой игрок накручивает себе опыт сам.
+        assert response.json()["xp_total"] == MAX_XP_TOTAL
+        assert client.get("/v1/players/me", headers=auth_headers).status_code == 200
 
     def test_long_game_still_awards_xp(
         self, client: TestClient, auth_headers: dict[str, str], make_game_payload: MakePayload
@@ -313,6 +337,23 @@ class TestGameUpdate:
         # replay не присылали — он остался нетронутым.
         assert response.json()["replay"] == {"moves": 4}
 
+    def test_null_duration_rejected(
+        self,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        existing_game: dict[str, Any],
+    ) -> None:
+        """У deal_cards null осмыслен, у длительности — нет: колонка NOT NULL,
+        а пересчёт опыта по None давал бы 500 вместо честного 422."""
+        response = client.patch(
+            f"/v1/games/{existing_game['game_id']}",
+            json={"duration_ms": None},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 422
+        assert client.get("/v1/players/me", headers=auth_headers).json()["xp_total"] == 100
+
     def test_empty_body_returns_game_unchanged(
         self,
         client: TestClient,
@@ -399,6 +440,31 @@ class TestGameDelete:
 
         assert response.json()["xp_total"] == 0
         assert client.get("/v1/players/me", headers=auth_headers).json()["xp_total"] == 0
+
+    def test_xp_does_not_go_below_zero(
+        self,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        existing_game: dict[str, Any],
+        make_game_payload: MakePayload,
+    ) -> None:
+        """Опыт мог быть выставлен меньшим до удаления партии.
+
+        Без отсечки сумма ушла бы в минус, а level_for_xp на отрицательном
+        бросает ValueError — и аккаунт залипал бы в 500 на каждой ручке,
+        считающей уровень, включая приём новых партий.
+        """
+        client.patch("/v1/players/me", json={"xp_total": 0}, headers=auth_headers)
+
+        response = client.delete(f"/v1/games/{existing_game['game_id']}", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json()["xp_total"] == 0
+        assert client.get("/v1/players/me", headers=auth_headers).status_code == 200
+        assert (
+            client.post("/v1/games", json=make_game_payload(), headers=auth_headers).status_code
+            == 200
+        )
 
     def test_game_not_readable_after_deletion(
         self,

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, Field, JsonValue, field_validator
 
 # Верхняя граница длительности — не игровое ограничение, а защита от
 # переполнения BIGINT: без неё стозначное число доехало бы до драйвера и дало
@@ -42,6 +42,21 @@ class GameUpdateRequest(BaseModel):
     duration_ms: int | None = Field(default=None, ge=1, le=MAX_DURATION_MS)
     deal_cards: JsonValue = None
     replay: JsonValue = None
+
+    @field_validator("duration_ms")
+    @classmethod
+    def duration_ms_is_not_null(cls, value: int | None) -> int:
+        """У deal_cards null осмыслен, у длительности — нет.
+
+        None в типе поля нужен ровно для умолчания: именно оно отличает
+        «не прислали» от «прислали». На умолчание валидатор не вызывается,
+        поэтому сюда доходит только присланное руками — и null среди него
+        должен стать честным 422, а не 500 в пересчёте опыта. Колонка всё
+        равно NOT NULL, обнулить длительность нечем.
+        """
+        if value is None:
+            raise ValueError("duration_ms cannot be null")
+        return value
 
 
 class GameResponse(BaseModel):

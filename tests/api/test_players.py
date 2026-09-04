@@ -170,6 +170,15 @@ class TestPlayerUpdate:
 
         assert response.status_code == 422
 
+    def test_huge_xp_rejected_not_crashing(
+        self, client: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """Граница стоит не ради игрового смысла, а чтобы стозначное число
+        не доехало до драйвера и не дало 500 вместо честного 422."""
+        response = client.patch("/v1/players/me", json={"xp_total": 10**30}, headers=auth_headers)
+
+        assert response.status_code == 422
+
     def test_missing_required_field_returns_422(
         self, client: TestClient, auth_headers: dict[str, str]
     ) -> None:
