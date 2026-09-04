@@ -1,11 +1,11 @@
 from typing import Literal, overload
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import BigInteger, cast, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import raise_player_not_found, raise_unauthorized
-from app.models import Game, Player
+from app.models import MAX_XP_TOTAL, Game, Player
 
 # Чтение обновляет объект значениями из базы, а не отдаёт его из кеша сессии.
 # Без этого identity map вернул бы прежний объект с устаревшим xp_total —
@@ -123,9 +123,35 @@ class PlayerObject:
 
         ``amount`` может быть отрицательным — так откатывается опыт при
         удалении партии и при уменьшении её длительности.
+
+        Сумма зажата с обеих сторон, и обе отсечки не косметика — каждая
+        закрывает свой способ загнать игрока в вечный 500:
+
+        * снизу: игрок мог выставить себе меньший опыт через PATCH, а потом
+          удалить партию. Отрицательный xp_total роняет ValueError в
+          level_for_xp, то есть ломает каждую ручку, считающую уровень;
+        * сверху: PATCH принимает ровно MAX_XP_TOTAL, и следующая же победа
+          добавляла бы к потолку колонки — asyncpg отвечает на это
+          NumericValueOutOfRangeError, и приём партий залипает намертво.
+
+        CAST в BIGINT обязателен и снять его нельзя: LEAST отсекает результат,
+        но сложение ``integer + integer`` переполняется РАНЬШЕ, чем до отсечки
+        доходит дело, — база считает выражение, а не читает его слева направо.
+        В BIGINT та же сумма помещается с запасом, а обратно в INTEGER её
+        приводит уже присваивание, которому LEAST гарантировал влезающее число.
+
+        Обе отсечки живут внутри того же атомарного выражения: ни чтения,
+        ни блокировки, ни второго запроса.
         """
         await session.execute(
-            update(Player).where(Player.id == player_id).values(xp_total=Player.xp_total + amount)
+            update(Player)
+            .where(Player.id == player_id)
+            .values(
+                xp_total=func.least(
+                    MAX_XP_TOTAL,
+                    func.greatest(0, Player.xp_total + cast(amount, BigInteger)),
+                )
+            )
         )
         # Результат отдаёт детальный геттер, а не RETURNING: так изменение
         # возвращает ровно тот же объект, что вернуло бы чтение.

@@ -2,6 +2,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+# Граница берётся из models, а не объявляется здесь: это предел типа колонки,
+# и второй его копии быть не должно. Схема лишь превращает выход за него
+# в честный 422 — чтобы стозначное число не доехало до драйвера и не дало 500.
+# Тот же приём, что MAX_DURATION_MS у длительности, только там граница BIGINT
+# и живёт рядом со своим полем, потому что кроме схемы её никто не читает.
+from app.models import MAX_XP_TOTAL
+
 
 class PlayerRegisterRequest(BaseModel):
     """Регистрация устройства.
@@ -32,7 +39,7 @@ class PlayerUpdateRequest(BaseModel):
     закрывать первой.
     """
 
-    xp_total: int = Field(ge=0)
+    xp_total: int = Field(ge=0, le=MAX_XP_TOTAL)
 
 
 class PlayerRegisteredResponse(BaseModel):

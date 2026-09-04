@@ -217,6 +217,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# macOS: Finder кладёт .DS_Store в каждую открытую папку. К проекту отношения
+# не имеет, а в diff-ах и в rsync-е деплоя мешается.
+.DS_Store
+
 # Косынка: файлы окружения сервера (.env.app, .env.site) создаются руками
 # в /opt/kosynka и не должны попадать в git даже случайно.
 .env.*
