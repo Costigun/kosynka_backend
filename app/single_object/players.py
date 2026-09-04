@@ -2,6 +2,7 @@ from typing import Literal, overload
 from uuid import UUID
 
 from sqlalchemy import BigInteger, cast, delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import raise_player_not_found, raise_unauthorized
@@ -21,11 +22,16 @@ class PlayerObject:
     из скаляров вызывающему коду не приходится.
     """
 
-    async def create(
-        self, session: AsyncSession, token_hash: str, device_id: str | None = None
-    ) -> Player:
-        """Завести нового игрока. Опыт стартует с нуля по умолчанию колонки."""
-        player = Player(token_hash=token_hash, device_id=device_id)
+    async def create(self, session: AsyncSession, token_hash: str) -> Player:
+        """Завести игрока БЕЗ устройства. Опыт стартует с нуля по умолчанию колонки.
+
+        Параметра ``device_id`` здесь нет намеренно, и возвращать его нельзя:
+        обычная вставка с device_id — это гонка (двое читают «нет игрока»,
+        оба вставляют, второй ловит UNIQUE и отдаёт 500). Устройство
+        регистрируется только через ``upsert_by_device_id``, где конфликт
+        разрешает сама база.
+        """
+        player = Player(token_hash=token_hash)
         session.add(player)
         # flush, а не commit: границу транзакции держит вызывающий сервис.
         await session.flush()
@@ -171,19 +177,35 @@ class PlayerObject:
         # возвращает ровно тот же объект, что вернуло бы чтение.
         return await self.get_by_id(session=session, player_id=player_id)
 
-    async def rotate_token(self, session: AsyncSession, player_id: UUID, token_hash: str) -> Player:
-        """Заменить хеш токена и вернуть обновлённого игрока.
+    async def upsert_by_device_id(
+        self, session: AsyncSession, token_hash: str, device_id: str
+    ) -> Player:
+        """Завести игрока или заменить токен уже известного устройства.
 
-        Вызывается при повторной регистрации известного устройства: старый
-        токен утрачен клиентом, и продолжать хранить его хеш незачем — заодно
-        это отзывает доступ, если прежний токен где-то остался.
+        Одним запросом, и это принципиально. Раздельные «посмотреть и вставить»
+        оставляли бы между собой окно: два параллельных запроса с одним
+        device_id оба видят «игрока нет», оба вставляют, второй ловит UNIQUE
+        и превращается в 500 на регистрации. Мобильная сеть ретраит — окно
+        рано или поздно откроется.
+
+        Конфликт разрешает сама база, как и у партий. Но действие противоположное:
+        партия на конфликте DO NOTHING, потому что повтор не должен ничего
+        менять — иначе удвоится опыт. Здесь наоборот, повторная регистрация
+        обязана заменить хеш: клиент утратил старый токен, хранить его незачем,
+        и заодно это отзывает доступ, если прежний токен где-то остался.
+
+        Прогресс при этом не трогается: в SET только token_hash, xp_total
+        и device_id остаются как были — ради них всё и затевалось.
         """
-        await session.execute(
-            update(Player).where(Player.id == player_id).values(token_hash=token_hash)
+        result = await session.execute(
+            pg_insert(Player)
+            .values(token_hash=token_hash, device_id=device_id)
+            .on_conflict_do_update(index_elements=["device_id"], set_={"token_hash": token_hash})
+            .returning(Player.id)
         )
         # Результат отдаёт детальный геттер, а не RETURNING: так изменение
         # возвращает ровно тот же объект, что вернуло бы чтение.
-        return await self.get_by_id(session=session, player_id=player_id)
+        return await self.get_by_id(session=session, player_id=result.scalar_one())
 
     async def count_games(self, session: AsyncSession, player_id: UUID) -> int:
         """Сколько партий у игрока.

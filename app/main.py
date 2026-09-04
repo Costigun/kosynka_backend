@@ -12,9 +12,9 @@ from app.db import create_engine, create_session_factory
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Движок живёт ровно столько же, сколько приложение.
 
-    ``dispose`` в конце обязателен: без него соединения к managed-базе
-    остаются висеть до таймаута на её стороне, а лимит подключений там
-    небольшой.
+    ``dispose`` в конце обязателен: без него соединения остаются висеть до
+    таймаута на стороне базы, а max_connections у postgres:18 — сотня на всех,
+    включая разовый запуск миграций.
     """
     settings = get_settings()
 

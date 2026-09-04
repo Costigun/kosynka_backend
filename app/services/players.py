@@ -40,28 +40,30 @@ class PlayerService:
         token = generate_token()
         token_hash = hash_token(token)
 
-        # raise_exception=False: для регистрации «устройства ещё нет» —
-        # нормальный путь, а не ошибка.
-        existing = (
-            await player_object.get_by_device_id(
-                session=session, device_id=device_id, raise_exception=False
-            )
-            if device_id
-            else None
-        )
-
-        if existing is None:
-            player = await player_object.create(
-                session=session, token_hash=token_hash, device_id=device_id
-            )
+        if device_id is None:
+            # Ключа идемпотентности нет — повторить прежний ответ нечем,
+            # каждый вызов заводит нового игрока.
+            player = await player_object.create(session=session, token_hash=token_hash)
             restored = False
         else:
-            # Старый токен клиент утратил — заменяем хеш. Заодно это отзывает
-            # доступ, если прежний токен где-то остался.
-            player = await player_object.rotate_token(
-                session=session, player_id=existing.id, token_hash=token_hash
+            # Чтение идёт только ради флага: сама вставка ниже атомарна и
+            # в этом ответе не нуждается. raise_exception=False — для
+            # регистрации «устройства ещё нет» нормальный путь, а не ошибка.
+            #
+            # ЦЕНА такого разделения: два одновременных запроса с одним
+            # device_id могут оба прочитать «нет» и оба ответить restored=false,
+            # хотя игрок один. Флаг соврёт, данные — нет: прогресс в ответе
+            # прочитан из той самой строки. Держать флаг честным можно было бы
+            # только выяснением, вставили мы или обновили, — платить за это
+            # усложнением ради поля, которое в этот момент всегда про нулевой
+            # прогресс, незачем.
+            existing = await player_object.get_by_device_id(
+                session=session, device_id=device_id, raise_exception=False
             )
-            restored = True
+            player = await player_object.upsert_by_device_id(
+                session=session, token_hash=token_hash, device_id=device_id
+            )
+            restored = existing is not None
 
         await session.commit()
 
